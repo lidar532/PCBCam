@@ -1,0 +1,4 @@
+# requirements.txt
+opencv-python
+numpy
+comtypes
