@@ -6,14 +6,13 @@ import time
 import math
 import sys
 import subprocess
-import json # ADDED: To fix NameError
+import json
 
 if sys.platform == "win32":
     try:
         import comtypes
         import comtypes.client
-    except ImportError:
-        print("CAM: WARNING - 'comtypes' library not found.")
+    except ImportError: print("CAM: WARNING - 'comtypes' library not found.")
 
 class CameraHandler:
     def __init__(self, command_queue, update_queue):
@@ -25,6 +24,10 @@ class CameraHandler:
         self.DRAG_THRESHOLD_SQ = 5**2
         self.frame_height, self.frame_width = 1080, 1920
         self.WINDOW_NAME, self.device_index, self.camera_name = "Initializing...", 0, "Unknown Camera"
+        
+        # This variable holds the data for active zoom windows
+        self.zoomed_markers = {}
+        
         self.marker_shape, self.marker_color, self.marker_size = 'Cross', (0,0,255), 15
         self.restart_attempts, self.MAX_RESTART_ATTEMPTS = 0, 5
 
@@ -32,10 +35,7 @@ class CameraHandler:
         if self.device_index not in self.camera_states:
             self.camera_states[self.device_index] = {"markers": [], "undo_stack": [], "redo_stack": []}
         return self.camera_states[self.device_index]
-
-    def _sync_gui_markers(self):
-        self.update_queue.put(('sync_markers', self._get_current_cam_state()['markers']))
-
+    def _sync_gui_markers(self): self.update_queue.put(('sync_markers', self._get_current_cam_state()['markers']))
     def _undo_action(self):
         state = self._get_current_cam_state()
         if not state['undo_stack']: return
@@ -45,7 +45,6 @@ class CameraHandler:
         elif action_type == 'delete': state['markers'].insert(last_action['index'], last_action['data'])
         elif action_type == 'modify': state['markers'][last_action['index']] = last_action['old_data']
         self._sync_gui_markers()
-        
     def _redo_action(self):
         state = self._get_current_cam_state()
         if not state['redo_stack']: return
@@ -55,18 +54,13 @@ class CameraHandler:
         elif action_type == 'delete': del state['markers'][last_action['index']]
         elif action_type == 'modify': state['markers'][last_action['index']] = last_action['new_data']
         self._sync_gui_markers()
-
     def _get_camera_name(self):
         if sys.platform == "win32":
             name = self._get_camera_name_windows_comtypes()
-            if name == f"Camera {self.device_index}":
-                name = self._get_camera_name_windows_powershell()
+            if name == f"Camera {self.device_index}": name = self._get_camera_name_windows_powershell()
             return name
-        elif sys.platform.startswith("linux"):
-            return self._get_camera_name_linux()
-        else:
-            return f"Camera {self.device_index}"
-
+        elif sys.platform.startswith("linux"): return self._get_camera_name_linux()
+        else: return f"Camera {self.device_index}"
     def _get_camera_name_windows_comtypes(self):
         try:
             comtypes.CoInitialize()
@@ -78,12 +72,9 @@ class CameraHandler:
                     prop_bag = pMoniker.BindToStorage(0, 0, comtypes.GUID("{55272A00-42CB-11CE-8135-00AA004BB851}"))
                     devices.append(prop_bag.Read("FriendlyName", 0))
             comtypes.CoUninitialize()
-            if self.device_index < len(devices):
-                return devices[self.device_index]
-        except Exception as e:
-            print(f"CAM: comtypes method failed. Error: {e}")
+            if self.device_index < len(devices): return devices[self.device_index]
+        except Exception as e: print(f"CAM: comtypes method failed. Error: {e}")
         return f"Camera {self.device_index}"
-
     def _get_camera_name_windows_powershell(self):
         print("CAM: comtypes failed, trying PowerShell fallback...")
         try:
@@ -91,14 +82,12 @@ class CameraHandler:
             result = subprocess.run(["powershell", "-Command", command], capture_output=True, text=True, check=True)
             output = result.stdout.strip()
             if not output: return f"Camera {self.device_index}"
-            data = json.loads(output)
+            data = json.loads(output);
             if not isinstance(data, list): data = [data]
             devices = [item['FriendlyName'] for item in data]
             if self.device_index < len(devices): return devices[self.device_index]
-        except Exception as e:
-            print(f"CAM: PowerShell method failed. Error: {e}")
+        except Exception as e: print(f"CAM: PowerShell method failed. Error: {e}")
         return f"Camera {self.device_index}"
-        
     def _get_camera_name_linux(self):
         try:
             cmd = "v4l2-ctl --list-devices"; result = subprocess.run(cmd.split(), capture_output=True, text=True)
@@ -116,7 +105,6 @@ class CameraHandler:
             if self.device_index < len(devices): return devices[self.device_index]['name']
         except Exception as e: print(f"CAM: Could not get camera name using v4l2-ctl. Error: {e}")
         return f"Camera {self.device_index}"
-
     def _initialize_camera(self, w=1920, h=1080):
         if hasattr(self, 'v'):
             try: cv2.destroyWindow(self.WINDOW_NAME)
@@ -135,15 +123,19 @@ class CameraHandler:
         status = {"name": self.camera_name, "index": self.device_index, "resolution": (self.frame_width, self.frame_height)}
         self.update_queue.put(('status_update', status))
         return True
-
     def handle_commands(self):
         try:
             command, value = self.command_queue.get_nowait()
             state = self._get_current_cam_state()
             if command == 'exit': return False
+            elif command == 'start_zoom_view':
+                marker_info = value; index = marker_info['index']
+                self.zoomed_markers[index] = marker_info['data']
+                zoom_window_name = f"Zoom - Marker #{index + 1}"
+                cv2.namedWindow(zoom_window_name, cv2.WINDOW_NORMAL)
+                cv2.setWindowProperty(zoom_window_name, cv2.WND_PROP_TOPMOST, 1)
             elif command == 'switch_camera':
-                self.device_index = value
-                self._initialize_camera(self.frame_width, self.frame_height)
+                self.device_index = value; self._initialize_camera(self.frame_width, self.frame_height)
                 self._sync_gui_markers()
             elif command == 'restart_camera': self._initialize_camera(self.frame_width, self.frame_height)
             elif command == 'delete_marker_confirmed':
@@ -175,22 +167,24 @@ class CameraHandler:
             elif command == 'set_marker_shape': self.marker_shape = value
             elif command == 'set_marker_color': self.marker_color = value
             elif command == 'set_marker_size': self.marker_size = value
-            elif command == 'get_current_markers': self._sync_gui_markers()
         except queue.Empty: pass
         return True
-
+    def _draw_single_marker(self, frame, marker_data, position):
+        shape, color, size = marker_data['shape'], marker_data['color'], marker_data['size']
+        draw_x, draw_y = position
+        half_size = size // 2
+        if shape == 'Cross':
+            cv2.line(frame, (draw_x - half_size, draw_y), (draw_x + half_size, draw_y), color, 1)
+            cv2.line(frame, (draw_x, draw_y - half_size), (draw_x, draw_y + half_size), color, 1)
+        elif shape == 'Circle': cv2.circle(frame, (draw_x, draw_y), half_size, color, 1)
+        elif shape == 'Square': cv2.rectangle(frame, (draw_x - half_size, draw_y - half_size), (draw_x + half_size, draw_y + half_size), color, 1)
     def draw_markers(self, frame):
         current_markers = self._get_current_cam_state()['markers']
         for marker in current_markers:
-            pos, shape, color, size = marker['pos'], marker['shape'], marker['color'], marker['size']
-            draw_x, draw_y = self.frame_width - 1 - pos[0], self.frame_height - 1 - pos[1]
-            half_size = size // 2
-            if shape == 'Cross':
-                cv2.line(frame, (draw_x - half_size, draw_y), (draw_x + half_size, draw_y), color, 1)
-                cv2.line(frame, (draw_x, draw_y - half_size), (draw_x, draw_y + half_size), color, 1)
-            elif shape == 'Circle': cv2.circle(frame, (draw_x, draw_y), half_size, color, 1)
-            elif shape == 'Square': cv2.rectangle(frame, (draw_x-half_size, draw_y-half_size), (draw_x+half_size, draw_y+half_size), color, 1)
-
+            pos = marker['pos']
+            draw_x = self.frame_width - 1 - pos[0]
+            draw_y = self.frame_height - 1 - pos[1]
+            self._draw_single_marker(frame, marker, (draw_x, draw_y))
     def mouse_events(self, event, x, y, flags, param):
         state = self._get_current_cam_state()
         if event == cv2.EVENT_LBUTTONDOWN:
@@ -211,42 +205,39 @@ class CameraHandler:
                     if dist_sq > self.DRAG_THRESHOLD_SQ: self.is_panning, self.last_mouse_pos = True, self.pan_start_pos
                 if self.is_panning:
                     dx, dy = x-self.last_mouse_pos[0], y-self.last_mouse_pos[1]
-                    self.pan_x -= int(round(dx / self.zoom_level)); self.pan_y -= int(round(dy / self.zoom_level))
-                    self.last_mouse_pos = (x, y)
+                    self.pan_x -= int(round(dx/self.zoom_level)); self.pan_y -= int(round(dy/self.zoom_level)); self.last_mouse_pos = (x, y)
         elif event == cv2.EVENT_RBUTTONUP:
             if self.right_button_down and not self.is_panning: self.find_and_request_description_dialog(x, y)
             self.right_button_down, self.is_panning = False, False
         elif event == cv2.EVENT_MOUSEWHEEL:
-            img_x, img_y = self.pan_x + x / self.zoom_level, self.pan_y + y / self.zoom_level
-            if flags > 0: self.zoom_level = min(self.zoom_level * 1.2, 10.0)
-            else: self.zoom_level = max(self.zoom_level / 1.2, 1.0)
+            img_x, img_y = self.pan_x + x/self.zoom_level, self.pan_y + y/self.zoom_level
+            if flags > 0: self.zoom_level = min(self.zoom_level*1.2, 10.0)
+            else: self.zoom_level = max(self.zoom_level/1.2, 1.0)
             if self.zoom_level <= 1.0: self.pan_x, self.pan_y = 0, 0
             else: self.pan_x, self.pan_y = int(round(img_x-(x/self.zoom_level))), int(round(img_y-(y/self.zoom_level)))
-        view_w, view_h = int(self.frame_width / self.zoom_level), int(self.frame_height / self.zoom_level)
+        view_w, view_h = int(self.frame_width/self.zoom_level), int(self.frame_height/self.zoom_level)
         max_pan_x, max_pan_y = self.frame_width-view_w, self.frame_height-view_h
         self.pan_x, self.pan_y = np.clip(self.pan_x, 0, max_pan_x), np.clip(self.pan_y, 0, max_pan_y)
-
     def find_and_request_description_dialog(self, window_x, window_y):
         current_markers = self._get_current_cam_state()['markers']
         if not current_markers: return
-        coord_on_rot_x, coord_on_rot_y = self.pan_x + window_x/self.zoom_level, self.pan_y + window_y/self.zoom_level
+        coord_on_rot_x, coord_on_rot_y = self.pan_x+window_x/self.zoom_level, self.pan_y+window_y/self.zoom_level
         target_x, target_y = self.frame_width-1-coord_on_rot_x, self.frame_height-1-coord_on_rot_y
         min_dist_sq, nearest_index = float('inf'), -1
         for i, marker in enumerate(current_markers):
-            dist_sq = (marker['pos'][0] - target_x)**2 + (marker['pos'][1] - target_y)**2
+            dist_sq = (marker['pos'][0]-target_x)**2 + (marker['pos'][1]-target_y)**2
             if dist_sq < min_dist_sq: min_dist_sq, nearest_index = dist_sq, i
         if nearest_index != -1: self.update_queue.put(('show_description_dialog_for_marker', nearest_index))
     def find_and_request_delete(self, window_x, window_y):
         current_markers = self._get_current_cam_state()['markers']
         if not current_markers: return
-        coord_on_rot_x, coord_on_rot_y = self.pan_x + window_x/self.zoom_level, self.pan_y + window_y/self.zoom_level
+        coord_on_rot_x, coord_on_rot_y = self.pan_x+window_x/self.zoom_level, self.pan_y+window_y/self.zoom_level
         target_x, target_y = self.frame_width-1-coord_on_rot_x, self.frame_height-1-coord_on_rot_y
         min_dist_sq, nearest_index = float('inf'), -1
         for i, marker in enumerate(current_markers):
-            dist_sq = (marker['pos'][0] - target_x)**2 + (marker['pos'][1] - target_y)**2
+            dist_sq = (marker['pos'][0]-target_x)**2 + (marker['pos'][1]-target_y)**2
             if dist_sq < min_dist_sq: min_dist_sq, nearest_index = dist_sq, i
         if nearest_index != -1: self.update_queue.put(('confirm_delete_marker', (nearest_index, current_markers[nearest_index])))
-
     def run(self):
         if not self._initialize_camera(): self.update_queue.put(('exit_gui', None)); return
         while True:
@@ -259,21 +250,59 @@ class CameraHandler:
                     print("CAM: Camera restart successful."); self.restart_attempts = 0; continue
                 else:
                     self.restart_attempts += 1
-                    if self.restart_attempts >= self.MAX_RESTART_ATTEMPTS:
-                        print(f"CAM: Max restart attempts reached."); self.update_queue.put(('exit_gui', None)); break
+                    if self.restart_attempts >= self.MAX_RESTART_ATTEMPTS: print(f"CAM: Max restart attempts reached."); self.update_queue.put(('exit_gui', None)); break
                     else: continue
             self.restart_attempts = 0
-            frame = cv2.rotate(frame, cv2.ROTATE_180)
-            self.draw_markers(frame)
-            view_w, view_h = int(self.frame_width / self.zoom_level), int(self.frame_height / self.zoom_level)
-            zoomed_frame = frame[self.pan_y : self.pan_y + view_h, self.pan_x : self.pan_x + view_w]
-            display_frame = cv2.resize(zoomed_frame, (self.frame_width, self.frame_height))
-            cv2.imshow(self.WINDOW_NAME, display_frame)
+            display_frame_main = frame.copy()
+            display_frame_main = cv2.rotate(display_frame_main, cv2.ROTATE_180)
+            self.draw_markers(display_frame_main)
+            view_w, view_h = int(self.frame_width/self.zoom_level), int(self.frame_height/self.zoom_level)
+            zoomed_display_frame = display_frame_main[self.pan_y:self.pan_y+view_h, self.pan_x:self.pan_x+view_w]
+            final_display = cv2.resize(zoomed_display_frame, (self.frame_width, self.frame_height))
+            cv2.imshow(self.WINDOW_NAME, final_display)
+            
+            indices_to_remove = set()
+            # --- CORRECTED: Loop over the correct dictionary name ---
+            for index, marker_data in list(self.zoomed_markers.items()):
+                zoom_window_name = f"Zoom - Marker #{index + 1}"
+                if cv2.getWindowProperty(zoom_window_name, cv2.WND_PROP_VISIBLE) < 1:
+                    indices_to_remove.add(index); continue
+                current_markers = self._get_current_cam_state()['markers']
+                if index >= len(current_markers): indices_to_remove.add(index); continue
+                marker_data = current_markers[index]
+                crop_size = 150; half_crop = crop_size // 2
+                marker_pos = marker_data['pos']
+                rotated_frame = cv2.rotate(frame, cv2.ROTATE_180)
+                draw_x, draw_y = self.frame_width-1-marker_pos[0], self.frame_height-1-marker_pos[1]
+                x1, y1 = draw_x-half_crop, draw_y-half_crop
+                x1c, y1c = max(0, x1), max(0, y1)
+                x2c, y2c = min(self.frame_width, x1+crop_size), min(self.frame_height, y1+crop_size)
+                cropped_frame = rotated_frame[y1c:y2c, x1c:x2c]
+                h, w = cropped_frame.shape[:2]
+                if h < crop_size or w < crop_size:
+                    top=max(0, y1*-1); bottom=max(0, y2-self.frame_height); left=max(0, x1*-1); right=max(0, x2-self.frame_width)
+                    cropped_frame = cv2.copyMakeBorder(cropped_frame, top, bottom, left, right, cv2.BORDER_CONSTANT, value=[0,0,0])
+                self._draw_single_marker(cropped_frame, marker_data, (half_crop, half_crop))
+                try:
+                    rect = cv2.getWindowImageRect(zoom_window_name)
+                    win_width, win_height = rect[2], rect[3]
+                    if win_width > 0 and win_height > 0:
+                        display_zoom_frame = cv2.resize(cropped_frame, (win_width, win_height))
+                    else: display_zoom_frame = cropped_frame
+                except cv2.error: display_zoom_frame = cropped_frame
+                cv2.imshow(zoom_window_name, display_zoom_frame)
+            if indices_to_remove:
+                for index in indices_to_remove:
+                    if index in self.zoomed_markers: del self.zoomed_markers[index]
+                    try: cv2.destroyWindow(f"Zoom - Marker #{index + 1}")
+                    except cv2.error: pass
+            
             key = cv2.waitKey(1) & 0xFF
             if key == 26: self._undo_action() # CTRL+Z
             elif key == 25: self._redo_action() # CTRL+Y
             elif key == ord('q') or cv2.getWindowProperty(self.WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
                 self.update_queue.put(('exit_gui', None)); break
+        self.v.release(); cv2.destroyAllWindows(); print("CAM: Camera process finished.")
 
 def run_camera_process(command_queue, update_queue):
     handler = CameraHandler(command_queue, update_queue)

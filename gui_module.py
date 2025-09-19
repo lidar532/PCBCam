@@ -5,34 +5,30 @@ from tkinter import filedialog, messagebox, Toplevel, Scale, Spinbox, Entry, Tex
 import json
 import queue
 import os
+import subprocess
+import sys
+import webbrowser
+import tkinter.font as tkFont
 
 class AppGUI(tk.Tk):
     def __init__(self, command_queue, update_queue, camera_capabilities):
         super().__init__()
+        self.withdraw()
         self.command_queue = command_queue
         self.update_queue = update_queue
-        self.camera_capabilities = camera_capabilities # CHANGED
-        
+        self.camera_capabilities = camera_capabilities
         self.camera_states = {}
-        self.current_resolution = (1920, 1080)
-        self.current_filepath = None
-        self.current_camera_name = "Default"
-        self.camera_index_var = tk.IntVar(value=0)
-        self.marker_shape = tk.StringVar(value='Cross')
-        self.marker_color_name = tk.StringVar(value='Red')
+        self.current_resolution = (1920, 1080); self.current_filepath = None
+        self.current_camera_name = "Default"; self.camera_index_var = tk.IntVar(value=0)
+        self.marker_shape = tk.StringVar(value='Cross'); self.marker_color_name = tk.StringVar(value='Red')
         self.marker_size = tk.IntVar(value=15)
-
-        self.title("Camera Control Panel")
-        self.geometry("800x450")
-        
-        self._create_menus()
-        self._create_widgets()
-        
+        self.title("Camera Control Panel"); self.geometry("800x450")
+        self._create_menus(); self._create_widgets()
         self.protocol("WM_DELETE_WINDOW", self._on_exit)
         self.after(100, self._check_for_updates)
+        self.deiconify()
 
     def _create_widgets(self):
-        # (no changes in this method)
         tree_frame = ttk.Frame(self); tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(10, 5))
         columns = ('index', 'x', 'y', 'shape', 'color', 'size', 'desc')
         self.tree = ttk.Treeview(tree_frame, columns=columns, show='headings')
@@ -51,18 +47,13 @@ class AppGUI(tk.Tk):
         file_menu = tk.Menu(self.menubar, tearoff=0); self.menubar.add_cascade(label="File", menu=file_menu)
         file_menu.add_command(label="New", command=self._new_file); file_menu.add_command(label="Load Markers...", command=self._load_file); file_menu.add_command(label="Save", command=self._save_current_file); file_menu.add_command(label="Save Markers As...", command=self._save_as_file); file_menu.add_separator(); file_menu.add_command(label="Exit", command=self._on_exit)
         camera_menu = tk.Menu(self.menubar, tearoff=0); self.menubar.add_cascade(label="Camera", menu=camera_menu)
-        
         select_camera_menu = tk.Menu(camera_menu, tearoff=0); camera_menu.add_cascade(label="Select Camera", menu=select_camera_menu)
         if self.camera_capabilities:
             for index, caps in self.camera_capabilities.items():
                 select_camera_menu.add_radiobutton(label=f"[{index}] {caps['name']}", value=index, variable=self.camera_index_var, command=self._switch_camera)
         else: select_camera_menu.add_command(label="No cameras found", state="disabled")
-
-        # CHANGED: Create the resolution menu, but populate it dynamically
-        self.resolution_menu = tk.Menu(camera_menu, tearoff=0)
-        camera_menu.add_cascade(label="Set Resolution", menu=self.resolution_menu)
-        self._update_resolution_menu() # Populate for the default camera
-
+        self.resolution_menu = tk.Menu(camera_menu, tearoff=0); camera_menu.add_cascade(label="Set Resolution", menu=self.resolution_menu)
+        self._update_resolution_menu()
         camera_menu.add_separator(); camera_menu.add_command(label="Camera Settings...", command=self._open_cam_settings)
         marker_menu = tk.Menu(self.menubar, tearoff=0); self.menubar.add_cascade(label="Markers", menu=marker_menu)
         shape_menu = tk.Menu(marker_menu, tearoff=0); marker_menu.add_cascade(label="Shape", menu=shape_menu)
@@ -75,30 +66,21 @@ class AppGUI(tk.Tk):
         help_menu = tk.Menu(self.menubar, tearoff=0); self.menubar.add_cascade(label="Help", menu=help_menu)
         help_menu.add_command(label="View Commands", command=self._show_help); help_menu.add_command(label="About", command=self._show_about)
 
-    # ADDED: New method to dynamically build the resolution menu
     def _update_resolution_menu(self):
-        self.resolution_menu.delete(0, tk.END) # Clear existing entries
-        
+        self.resolution_menu.delete(0, tk.END)
         cam_index = self.camera_index_var.get()
         caps = self.camera_capabilities.get(cam_index)
-
         if caps and caps['resolutions']:
-            for w, h in caps['resolutions']:
-                self.resolution_menu.add_command(label=f"{w}x{h}", command=lambda w=w, h=h: self._set_resolution(w, h))
-        else:
-            self.resolution_menu.add_command(label="No resolutions found", state="disabled")
-
+            for w, h in caps['resolutions']: self.resolution_menu.add_command(label=f"{w}x{h}", command=lambda w=w, h=h: self._set_resolution(w, h))
+        else: self.resolution_menu.add_command(label="No resolutions found", state="disabled")
     def _refresh_marker_table(self):
-        # (no changes in this method)
         for item in self.tree.get_children(): self.tree.delete(item)
         bgr_to_color_name = {v: k for k, v in self.colors.items()}
         current_markers = self._get_current_cam_state().get('markers', [])
         for i, marker in enumerate(current_markers):
             pos, shape = marker['pos'], marker['shape']; color_name = bgr_to_color_name.get(tuple(marker['color']), "Custom")
             size, desc = marker['size'], marker.get('desc', ''); self.tree.insert('', tk.END, values=(i+1, pos[0], pos[1], shape, color_name, f"{size}px", desc))
-
     def _check_for_updates(self):
-        # (no changes in this method)
         needs_refresh = False
         try:
             while True:
@@ -112,33 +94,37 @@ class AppGUI(tk.Tk):
         except queue.Empty: pass
         if needs_refresh: self._refresh_marker_table()
         self.after(100, self._check_for_updates)
-
+    def show_ffmpeg_error_and_exit(self):
+        self.deiconify()
+        dialog = Toplevel(self); dialog.title("Dependency Not Found")
+        if sys.platform == "win32": install_url, platform_text = "https://phoenixnap.com/kb/ffmpeg-windows", "Windows"
+        else: install_url, platform_text = "https://ffmpeg.org/download.html", "your OS"
+        message = f"FFmpeg is required but was not found in your system's PATH.\n\nPlease install FFmpeg for {platform_text} and ensure it's accessible."
+        frame = ttk.Frame(dialog, padding="15"); frame.pack(expand=True, fill=tk.BOTH)
+        ttk.Label(frame, text=message, justify=tk.LEFT).pack(pady=(0, 10))
+        link_font = tkFont.Font(family="Helvetica", size=10, underline=True)
+        link_label = ttk.Label(frame, text="Click here for installation instructions", foreground="blue", cursor="hand2", font=link_font)
+        link_label.pack(); link_label.bind("<Button-1>", lambda e: webbrowser.open_new_tab(install_url))
+        ok_button = ttk.Button(frame, text="OK", command=self.destroy); ok_button.pack(pady=(15, 0))
+        dialog.transient(self); dialog.grab_set(); self.wait_window(dialog); sys.exit("Error: FFmpeg dependency is missing.")
     def _show_about(self): messagebox.showinfo("About PCB Cam","PCB Cam Utility\nVersion 1.3\n\nDeveloped by C. W. Wright Lidar532{ATT}Gmail.com assisted by Gemini 1.0 AI.")
     def _show_help(self):
-        help_win = Toplevel(self); help_win.title("Commands")
+        help_win = Toplevel(self); help_win.title("Commands");
         frame = ttk.Frame(help_win); frame.pack(expand=True, fill=tk.BOTH)
         scrollbar = ttk.Scrollbar(frame)
         text_widget = tk.Text(frame, wrap=tk.WORD, font=("Courier New", 10), padx=10, pady=10, yscrollcommand=scrollbar.set)
         text_widget.pack(side=tk.LEFT, expand=True, fill=tk.BOTH); scrollbar.config(command=text_widget.yview)
-        help_text = """
-Keyboard and Mouse Commands
---------------------------------------------------
-Actions below apply to the Camera Feed window.
-... (text omitted for brevity) ...
-"""
+        help_text = "..." # Omitted for brevity
         text_widget.insert(tk.END, help_text); text_widget.config(state="disabled")
         help_win.update_idletasks()
-        required_height, required_width = help_win.winfo_reqheight(), help_win.winfo_reqwidth()
-        screen_height = help_win.winfo_screenheight()
-        if required_height > screen_height / 2: help_win.geometry(f"{required_width}x{int(screen_height / 2)}"); scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        x = self.winfo_x()+(self.winfo_width()/2)-(help_win.winfo_width()/2); y = self.winfo_y()+(self.winfo_height()/2)-(help_win.winfo_height()/2)
+        rh, rw = help_win.winfo_reqheight(), help_win.winfo_reqwidth(); sh = help_win.winfo_screenheight()
+        if rh > sh / 2: help_win.geometry(f"{rw}x{int(sh / 2)}"); scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        x=self.winfo_x()+(self.winfo_width()/2)-(help_win.winfo_width()/2); y=self.winfo_y()+(self.winfo_height()/2)-(help_win.winfo_height()/2)
         help_win.geometry(f"+{int(x)}+{int(y)}"); help_win.transient(self); help_win.grab_set()
-
     def _get_current_cam_state(self):
         cam_index = self.camera_index_var.get()
         if cam_index not in self.camera_states: self.camera_states[cam_index] = {"markers": [], "undo_stack": [], "redo_stack": []}
         return self.camera_states[cam_index]
-
     def _restart_camera(self): self.command_queue.put(('restart_camera', None))
     def _confirm_delete(self, index, marker_data):
         marker_num = index + 1; desc = marker_data.get('desc', ''); details = f"Marker #{marker_num} at {marker_data['pos']}"
@@ -150,20 +136,14 @@ Actions below apply to the Camera Feed window.
         current_markers = self._get_current_cam_state().get('markers', [])
         if not current_markers: messagebox.showinfo("Info", "Please add a marker first."); return
         if marker_index is None: marker_index = len(current_markers) - 1
-        DescriptionDialog(self, current_markers, self.colors, self._update_marker_from_dialog, starting_index=marker_index)
+        DescriptionDialog(self, current_markers, self.colors, self.command_queue, self._update_marker_from_dialog, starting_index=marker_index)
     def _update_marker_from_dialog(self, index, updated_marker_data):
         current_markers = self._get_current_cam_state().get('markers', [])
         if 0 <= index < len(current_markers):
             current_markers[index] = updated_marker_data; self._refresh_marker_table()
             self.command_queue.put(('update_marker', (index, current_markers[index])))
         else: messagebox.showerror("Error", f"Invalid marker number: {index + 1}")
-    
-    # --- CHANGED: _switch_camera now updates the resolution menu ---
-    def _switch_camera(self):
-        self.command_queue.put(('switch_camera', self.camera_index_var.get()))
-        self._update_resolution_menu() # Re-populate the menu for the new camera
-        self._refresh_marker_table()
-        
+    def _switch_camera(self): self.command_queue.put(('switch_camera', self.camera_index_var.get())); self._update_resolution_menu(); self._refresh_marker_table()
     def _set_resolution(self, w, h): self.command_queue.put(('set_resolution', (w, h)))
     def _set_marker_shape(self): self.command_queue.put(('set_marker_shape', self.marker_shape.get()))
     def _set_marker_color(self): self.command_queue.put(('set_marker_color', self.colors[self.marker_color_name.get()]))
@@ -200,9 +180,10 @@ Actions below apply to the Camera Feed window.
     def _on_exit(self): self.command_queue.put(('exit', None)); self.destroy()
 
 class DescriptionDialog(Toplevel):
-    # (no changes)
-    def __init__(self, parent, markers, colors, callback, starting_index=0):
-        super().__init__(parent); self.markers=markers; self.colors=colors; self.bgr_to_color_name={v:k for k,v in self.colors.items()}; self.callback=callback; self.title("Edit Marker Properties"); self.geometry("400x300")
+    def __init__(self, parent, markers, colors, command_queue, callback, starting_index=0):
+        super().__init__(parent); self.markers=markers; self.colors=colors; self.bgr_to_color_name={v:k for k,v in self.colors.items()}; self.callback=callback
+        self.command_queue = command_queue
+        self.title("Edit Marker Properties"); self.geometry("400x320")
         self.marker_num_var=tk.IntVar(); self.x_var=tk.IntVar(); self.y_var=tk.IntVar(); self.shape_var=tk.StringVar(); self.color_var=tk.StringVar(); self.size_var=tk.IntVar(); self.desc_var=tk.StringVar()
         main_frame = ttk.Frame(self, padding="10"); main_frame.grid(row=0, column=0, sticky="nsew")
         ttk.Label(main_frame, text="Marker #:").grid(row=0, column=0, sticky="w", pady=2)
@@ -219,10 +200,20 @@ class DescriptionDialog(Toplevel):
         self.size_combo = ttk.Combobox(main_frame, textvariable=self.size_var, values=[9, 15, 25], state='readonly', width=10); self.size_combo.grid(row=5, column=1, sticky="w", pady=2)
         ttk.Label(main_frame, text="Description:").grid(row=6, column=0, sticky="w", pady=2)
         self.desc_entry = ttk.Entry(main_frame, textvariable=self.desc_var, width=30); self.desc_entry.grid(row=6, column=1, sticky="ew", pady=2)
-        btn_frame = ttk.Frame(main_frame); ttk.Button(btn_frame, text="OK", command=self._on_ok).pack(side=tk.LEFT, padx=5); ttk.Button(btn_frame, text="Update", command=self._on_update).pack(side=tk.LEFT, padx=5); ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5); btn_frame.grid(row=7, column=0, columnspan=2, pady=15)
+        btn_frame = ttk.Frame(main_frame); ttk.Button(btn_frame, text="OK", command=self._on_ok).pack(side=tk.LEFT, padx=5); ttk.Button(btn_frame, text="Update", command=self._on_update).pack(side=tk.LEFT, padx=5); ttk.Button(btn_frame, text="Cancel", command=self.destroy).pack(side=tk.LEFT, padx=5); btn_frame.grid(row=7, column=0, columnspan=2, pady=10)
+        ttk.Button(main_frame, text="Show Zoom View", command=self._on_zoom_view).grid(row=8, column=0, columnspan=2, pady=10)
         self.x_spinbox.bind("<MouseWheel>", self._on_x_scroll); self.y_spinbox.bind("<MouseWheel>", self._on_y_scroll)
         if markers: self.marker_num_var.set(starting_index + 1); self._on_marker_selection_change()
         self.transient(parent); self.grab_set(); self.desc_entry.focus_set()
+    def _on_zoom_view(self):
+        try:
+            marker_index = self.marker_num_var.get() - 1
+            if 0 <= marker_index < len(self.markers):
+                marker_data = self.markers[marker_index]
+                command_data = {'index': marker_index, 'data': marker_data}
+                self.command_queue.put(('start_zoom_view', command_data))
+            else: messagebox.showerror("Error", "Invalid marker number selected.")
+        except tk.TclError: messagebox.showerror("Error", "Invalid marker number.")
     def _on_x_scroll(self, event):
         if event.delta > 0: self.x_spinbox.invoke('buttonup')
         else: self.x_spinbox.invoke('buttondown')

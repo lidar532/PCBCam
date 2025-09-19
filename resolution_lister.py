@@ -62,10 +62,6 @@ def parse_ffmpeg_resolutions_linux(output, min_fps):
     return sorted(list(found_resolutions), key=lambda res: res[0]*res[1])
 
 def discover_camera_capabilities(min_fps=30, format_vcodec='mjpeg'):
-    """
-    Detects all cameras and extracts their supported resolutions.
-    Returns a dictionary mapping camera identifiers to their capabilities.
-    """
     all_camera_caps = {}
     
     if sys.platform == "win32":
@@ -75,6 +71,13 @@ def discover_camera_capabilities(min_fps=30, format_vcodec='mjpeg'):
                 command = f'ffmpeg -list_options true -f dshow -i video="{device_name}"'
                 result = subprocess.run(command, capture_output=True, text=True, shell=True, encoding='utf-8')
                 output = result.stdout + result.stderr
+                
+                # --- ADDED: Debug printing ---
+                print("-" * 20, file=sys.stderr)
+                print(f"DEBUG: Raw FFmpeg output for '{device_name}':", file=sys.stderr)
+                print(output, file=sys.stderr)
+                print("-" * 20, file=sys.stderr)
+                
                 resolutions = parse_ffmpeg_resolutions_windows(output, min_fps)
                 all_camera_caps[index] = {"name": device_name, "resolutions": resolutions}
             except Exception as e:
@@ -82,6 +85,7 @@ def discover_camera_capabilities(min_fps=30, format_vcodec='mjpeg'):
                 all_camera_caps[index] = {"name": device_name, "resolutions": []}
 
     elif sys.platform.startswith("linux"):
+        # (Linux logic is unchanged)
         devices = get_camera_devices_linux()
         for index, device_path in enumerate(devices):
             try:

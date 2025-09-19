@@ -2,86 +2,105 @@
 import sys
 import subprocess
 import json
+import re
 
-def get_cameras_windows_comtypes():
-    """Uses comtypes to get a list of camera names and indices on Windows."""
-    try:
-        import comtypes
-        import comtypes.client
-        comtypes.CoInitialize()
-        
-        DEVICES_CATEGORY_GUID = "{860BB310-5D01-11d0-BD3B-00A0C911CE86}"
-        devices_list = []
-        
-        pSysDevEnum = comtypes.client.CreateObject("{62BE5D10-60EB-11d0-BD3B-00A0C911CE86}")
-        pEnumCat = pSysDevEnum.CreateClassEnumerator(comtypes.GUID(DEVICES_CATEGORY_GUID), 0)
-        
-        if pEnumCat is not None:
-            for index, pMoniker in enumerate(pEnumCat):
-                prop_bag = pMoniker.BindToStorage(0, 0, comtypes.GUID("{55272A00-42CB-11CE-8135-00AA004BB851}"))
-                friendly_name = prop_bag.Read("FriendlyName", 0)
-                devices_list.append({"index": index, "name": friendly_name})
-        
-        comtypes.CoUninitialize()
-        return devices_list
-    except (ImportError, Exception) as e:
-        print(f"Lister: comtypes method failed. Error: {e}", file=sys.stderr)
-        return []
-
-def get_cameras_windows_powershell():
-    """Fallback method using PowerShell to get camera names."""
-    print("Lister: comtypes failed, trying PowerShell fallback...", file=sys.stderr)
+def get_camera_devices_windows():
+    devices = []
     try:
         command = "Get-PnpDevice -Class 'Camera','Image' -Status 'OK' | Select-Object FriendlyName | ConvertTo-Json"
-        result = subprocess.run(["powershell", "-Command", command], capture_output=True, text=True, check=True)
-        
+        result = subprocess.run(["powershell", "-Command", command], capture_output=True, text=True, check=True, encoding='utf-8')
         output = result.stdout.strip()
-        if not output:
-            return []
-            
+        if not output: return []
         data = json.loads(output)
-        if not isinstance(data, list):
-            data = [data]
-
-        devices_list = [{"index": i, "name": item['FriendlyName']} for i, item in enumerate(data)]
-        return devices_list
-    except (FileNotFoundError, subprocess.CalledProcessError, json.JSONDecodeError, Exception) as e:
+        if not isinstance(data, list): data = [data]
+        devices = [item['FriendlyName'] for item in data]
+    except Exception as e:
         print(f"Lister: PowerShell method failed. Error: {e}", file=sys.stderr)
-        return []
+    return devices
 
-def get_cameras_linux():
+def get_camera_devices_linux():
+    devices = []
     try:
         cmd = "v4l2-ctl --list-devices"
         result = subprocess.run(cmd.split(), capture_output=True, text=True, check=True)
         output = result.stdout.strip()
-        devices, current_device_name, device_paths = [], None, []
-        for line in output.split('\n'):
-            if not line.startswith('\t'):
-                current_device_name = line.strip().split(' (')[0]
-                device_paths = []
-            elif line.strip().startswith('/dev/video'):
-                device_paths.append(line.strip())
-            
-            if current_device_name and device_paths:
-                for path in device_paths:
-                    try:
-                        index = int(path.replace('/dev/video', ''))
-                        if not any(d['name'] == current_device_name for d in devices):
-                             devices.append({"index": index, "name": current_device_name})
-                    except ValueError: continue
-                device_paths = []
-        return sorted(devices, key=lambda d: d['index'])
-    except (FileNotFoundError, subprocess.CalledProcessError, Exception) as e:
-        print(f"Lister: Could not list cameras using v4l2-ctl. Error: {e}", file=sys.stderr)
-        return []
+        devices = re.findall(r'(/dev/video\d+)', output)
+    except Exception as e:
+        print(f"Lister: v4l2-ctl failed. Error: {e}", file=sys.stderr)
+    return devices
 
-if __name__ == "__main__":
-    cameras = []
+def parse_ffmpeg_resolutions_windows(output, min_fps):
+    regex = re.compile(r"s=(\d+x\d+)\s+fps=([\d\.]+)")
+    found_resolutions = set()
+    for line in output.split('\n'):
+        if "vcodec=mjpeg" in line:
+            matches = regex.findall(line)
+            for res_str, fps_str in matches:
+                fps = float(fps_str)
+                if fps >= min_fps:
+                    w, h = map(int, res_str.split('x'))
+                    found_resolutions.add((w, h))
+    return sorted(list(found_resolutions), key=lambda res: res[0]*res[1])
+
+def parse_ffmpeg_resolutions_linux(output, min_fps):
+    found_resolutions = set()
+    lines = output.split('\n')
+    in_mjpeg_block = False
+    for line in lines:
+        line = line.strip()
+        if line.startswith('[') and ']' in line:
+            in_mjpeg_block = "'MJPG'" in line or "(Motion-JPEG)" in line
+        if in_mjpeg_block:
+            if line.startswith('Size:'):
+                res_matches = re.findall(r'(\d+x\d+)', line)
+                fps_matches = re.findall(r'(\d+\.\d+)\s*fps', line)
+                if res_matches and fps_matches:
+                    fps = float(fps_matches[0])
+                    if fps >= min_fps:
+                        w, h = map(int, res_matches[0].split('x'))
+                        found_resolutions.add((w, h))
+    return sorted(list(found_resolutions), key=lambda res: res[0]*res[1])
+
+def discover_camera_capabilities(min_fps=30, format_vcodec='mjpeg'):
+    all_camera_caps = {}
     if sys.platform == "win32":
-        cameras = get_cameras_windows_comtypes()
-        if not cameras:
-            cameras = get_cameras_windows_powershell()
+        devices = get_camera_devices_windows()
+        for index, device_name in enumerate(devices):
+            try:
+                command = f'ffmpeg -list_options true -f dshow -i video="{device_name}"'
+                result = subprocess.run(command, capture_output=True, text=True, shell=True, encoding='utf-8')
+                output = result.stdout + result.stderr
+                resolutions = parse_ffmpeg_resolutions_windows(output, min_fps)
+                all_camera_caps[index] = {"name": device_name, "resolutions": resolutions}
+            except Exception as e:
+                print(f"Error processing '{device_name}': {e}", file=sys.stderr)
+                all_camera_caps[index] = {"name": device_name, "resolutions": []}
     elif sys.platform.startswith("linux"):
-        cameras = get_cameras_linux()
-    
-    print(json.dumps(cameras))
+        devices = get_camera_devices_linux()
+        for index, device_path in enumerate(devices):
+            try:
+                command = f"ffmpeg -list_formats all -f v4l2 -i {device_path}"
+                result = subprocess.run(command.split(), capture_output=True, text=True)
+                output = result.stdout + result.stderr
+                resolutions = parse_ffmpeg_resolutions_linux(output, min_fps)
+                all_camera_caps[index] = {"name": device_path, "resolutions": resolutions}
+            except Exception as e:
+                print(f"Error processing '{device_path}': {e}", file=sys.stderr)
+                all_camera_caps[index] = {"name": device_path, "resolutions": []}
+    return all_camera_caps
+
+if __name__ == '__main__':
+    print("Detecting camera resolutions with default settings (min 30fps, mjpeg format)...")
+    detected_caps = discover_camera_capabilities()
+    if not detected_caps:
+        print("\nNo cameras or supported resolutions found.")
+    else:
+        print("\n--- Detection Results ---")
+        for index, caps in detected_caps.items():
+            print(f"\nCamera Index: {index} | Name: {caps['name']}")
+            if caps['resolutions']:
+                res_str = ", ".join([f"{w}x{h}" for w, h in caps['resolutions']])
+                print(f"  Supported Resolutions: {res_str}")
+            else:
+                print("  No resolutions found matching the criteria.")
+        print("\n-------------------------")
