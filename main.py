@@ -1,23 +1,42 @@
 # main.py
 import multiprocessing
+import subprocess
+import sys
+import json
 from gui_module import AppGUI
 from camera_process import run_camera_process
+
+def discover_available_cameras():
+    """Runs the discovery script and returns a list of available cameras."""
+    try:
+        # Use sys.executable to ensure we use the same Python interpreter
+        command = [sys.executable, "camera_lister.py"]
+        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        cameras = json.loads(result.stdout)
+        return cameras
+    except (subprocess.CalledProcessError, FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"MAIN: Could not discover cameras. Error: {e}")
+        return [] # Return an empty list on failure
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()
 
-    # Queue for GUI -> Camera commands
+    # --- ADDED: Discover cameras before starting processes ---
+    print("MAIN: Discovering available cameras...")
+    available_cameras = discover_available_cameras()
+    if not available_cameras:
+        print("MAIN: No cameras found. The application may not function correctly.")
+    else:
+        print(f"MAIN: Found cameras: {available_cameras}")
+
     command_queue = multiprocessing.Queue()
-    # ADDED: Queue for Camera -> GUI updates
     update_queue = multiprocessing.Queue()
 
-    # Create and start the camera process, passing both queues
     camera_proc = multiprocessing.Process(target=run_camera_process, args=(command_queue, update_queue))
     camera_proc.start()
 
-    # Create the GUI application, passing both queues
-    app = AppGUI(command_queue, update_queue)
+    # Pass the discovered camera list to the GUI
+    app = AppGUI(command_queue, update_queue, available_cameras)
     app.mainloop()
 
-    # When the GUI is closed, wait for the camera process to finish
     camera_proc.join()
