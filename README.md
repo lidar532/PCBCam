@@ -30,6 +30,23 @@ All of the following actions are performed when your cursor is over the camera f
 
 * **Delete Nearest Marker (Shift + Middle-Click):**  Holding the Shift key while clicking 
   the middle mouse button will find the marker nearest to your cursor and open a dialog to confirm its deletion.
+  
+## Zoomed Marker View
+
+The Zoomed Marker View provides a persistent, magnified, real-time video feed centered on a specific marker. This allows for close monitoring of one or more points of interest while still maintaining a full view in the main window.
+
+* **How to Open:** A dedicated zoom window can be opened for any marker by selecting it in 
+  the "Edit Marker Properties" dialog and clicking the **"Show Zoom View"** button.
+* **Multiple Windows:** You can open multiple zoom windows simultaneously, one for each 
+  marker you wish to monitor up close. Each window is independent.
+* **Content:** Each window displays a 150x150 pixel area from the original camera feed, 
+  centered on its associated marker.
+* **Dynamic Properties:** The marker graphic shown in the center of the zoom window will
+  automatically update to match any changes you make to the original marker's shape, color, or size.
+* **Resizable:** The zoom window is fully resizable. You can click and drag its corners or 
+  edges to scale it to any size, and the video content will stretch to fit.
+* **Closing:** Each zoom window can be closed independently at any time by clicking the **"X"** 
+  button on its title bar without affecting the main application or other zoom windows.
 
 ## Working with Markers
 Markers are unique annotations you can place on the video feed. Each marker is independent
